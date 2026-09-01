@@ -12,3 +12,16 @@ export async function loadProjectFile(path: string): Promise<RefMindProjectFile>
 export async function loadProjectDataUrl(dataUrl: string, nameHint?: string): Promise<RefMindProjectFile> {
   return invoke<RefMindProjectFile>('load_project_data_url', { dataUrl, nameHint });
 }
+
+export interface CacheSettingsInfo {
+  cacheDir: string;
+  defaultCacheDir: string;
+}
+
+export async function getCacheSettings(): Promise<CacheSettingsInfo> {
+  return invoke<CacheSettingsInfo>('get_cache_settings');
+}
+
+export async function setCacheDir(path: string): Promise<void> {
+  await invoke('set_cache_dir', { path });
+}

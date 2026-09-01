@@ -131,7 +131,7 @@ h3 { font-size: 13px; color: #c8c8c8; margin-top: 16px; }
 .property-list textarea { min-height: 96px; resize: vertical; }
 .asset-detail p { font-size: 12px; color: #c8c8c8; word-break: break-all; }
 .warning { color: #ffcf7a !important; }
-.statusbar { height: 24px; padding: 4px 10px; color: #b8b8b8; font-size: 12px; background: rgba(34,34,34,0.96); border-top: 1px solid #383838; }
+.statusbar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 50; height: 24px; padding: 4px 10px; color: #b8b8b8; font-size: 12px; background: rgba(34,34,34,0.96); border-top: 1px solid #383838; }
 .compact-statusbar { position: absolute; left: 0; right: 0; bottom: 0; pointer-events: none; }
 .floating-brand { position: absolute; left: 10px; top: 42px; color: rgba(235,235,235,0.58); font-weight: 700; font-size: 13px; letter-spacing: 0.2px; pointer-events: none; text-shadow: 0 1px 2px rgba(0,0,0,0.45); }
 .floating-mode { position: absolute; right: 12px; top: 10px; z-index: 10; color: #7ee787; border: 1px solid rgba(126,231,135,0.35); background: rgba(30,70,45,0.55); border-radius: 4px; padding: 4px 8px; font-size: 12px; pointer-events: none; }
@@ -2141,4 +2141,37 @@ h3 { font-size: 13px; color: #c8c8c8; margin-top: 16px; }
 }
 .edge-dock-left.ai-dock.ai-dock-open:focus-within {
   transform: translateX(28px) !important;
+}
+
+/* 缓存目录设置 */
+.cache-first-run-dialog {
+  width: min(460px, calc(100vw - 40px));
+}
+.cache-first-run-dialog p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.cache-dialog-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+.cache-section-title {
+  margin-top: 14px;
+}
+.cache-dir-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.cache-dir-input {
+  flex: 1;
+  min-width: 0;
+  background: #1d1d1d;
+  border: 1px solid #4a4a4a;
+  color: #c8c8c8;
+  border-radius: 4px;
+  padding: 8px;
+  font: 12px/1.4 Consolas, "Cascadia Mono", monospace;
 }

@@ -11,7 +11,7 @@ import { ModelViewer } from '../features/model-viewer/ModelViewer';
 import { documentExtensions, imageExtensions, importFileDataCandidatesToProject, importImageCandidatesToProject, importPathsToProject, modelExtensions, videoExtensions, type FileDataImportCandidate, type ImageImportCandidate, type ImportLayoutDirection } from '../features/assets/importController';
 import { exportEditableDocumentAsset, importClipboardImageDataUrl } from '../features/assets/assetImport';
 import { AI_VISION_MODELS, type AiModelManifest } from '../features/ai/modelManifest';
-import { loadProjectDataUrl, loadProjectFile, saveProjectFile } from '../features/project/projectIO';
+import { getCacheSettings, loadProjectDataUrl, loadProjectFile, saveProjectFile, setCacheDir } from '../features/project/projectIO';
 import { useProjectStore } from '../stores/projectStore';
 import type { AssetRecord, CanvasNode, DoodleTool, ImportedModel, RefMindProject, RefMindProjectFile, RefMindWorkspaceFile } from '../shared/types';
 import { exportProjectToPng, exportSelectedNodesToPng } from '../features/export/exportCanvas';
@@ -38,7 +38,9 @@ interface ShortcutSettings {
   mindChild: string;
 }
 
-interface StorageSettings {}
+interface StorageSettings {
+  cacheDir?: string;
+}
 
 type AIProviderType = 'openai-compatible' | 'ollama' | 'doubao' | 'custom';
 type ImageProviderType = 'openai-images' | 'doubao-images';
@@ -246,7 +248,11 @@ const shortcutNames: Record<ShortcutKey, string> = {
   mindChild: '拖出思维导图子对象'
 };
 
-const defaultStorage: StorageSettings = {};
+const defaultStorage: StorageSettings = {
+  cacheDir: ''
+};
+
+const CACHE_LOCATION_CHOSEN_KEY = 'refmind3d.cache-location-chosen';
 
 const defaultAISettings: AISettings = {
   provider: API_ONLY_EDITION ? 'openai-compatible' : 'ollama',
@@ -843,6 +849,53 @@ export function App() {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const preferInternalClipboardRef = useRef(false);
+  const [cacheDir, setCacheDirState] = useState('');
+  const [defaultCacheDir, setDefaultCacheDir] = useState('');
+  const [cacheSettingsOpen, setCacheSettingsOpen] = useState(false);
+  const [cacheBusy, setCacheBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getCacheSettings()
+      .then((info) => {
+        if (cancelled) return;
+        setCacheDirState(info.cacheDir);
+        setDefaultCacheDir(info.defaultCacheDir);
+        if (!localStorage.getItem(CACHE_LOCATION_CHOSEN_KEY)) {
+          setCacheSettingsOpen(true);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const applyCacheDir = async (dir: string) => {
+    setCacheBusy(true);
+    try {
+      await setCacheDir(dir);
+      setCacheDirState(dir);
+      localStorage.setItem(CACHE_LOCATION_CHOSEN_KEY, '1');
+      setCacheSettingsOpen(false);
+      setStatus(`缓存目录已设置：${dir}`);
+    } catch (error) {
+      alert(`设置缓存目录失败：${String(error)}`);
+    } finally {
+      setCacheBusy(false);
+    }
+  };
+
+  const chooseDefaultCacheDir = () => {
+    if (defaultCacheDir) void applyCacheDir(defaultCacheDir);
+  };
+
+  const chooseCustomCacheDir = async () => {
+    const selected = await open({ directory: true, multiple: false, title: '选择缓存目录' });
+    const dir = Array.isArray(selected) ? selected[0] : selected;
+    if (!dir) return;
+    void applyCacheDir(dir);
+  };
 
   useLayoutEffect(() => {
     if (contextMenu && menuRef.current) {
@@ -2365,7 +2418,7 @@ export function App() {
     candidates = selectedCandidates;
     const keys = selectedCandidates.map(candidateDropKey);
     if (!shouldAcceptDrop(keys, dropPoint)) return;
-    setStatus(`æ­£åœ¨æŠ“å– ${candidates.length} å¼ å›¾ç‰‡...`);
+    setStatus(`正在抓取 ${candidates.length} 张图片...`);
     try {
       const wasEmptyCanvas = useProjectStore.getState().project.nodes.length === 0;
       const result = await importImageCandidatesToProject(selectedCandidates, dropPoint, settings.importLayoutDirection);
@@ -2373,15 +2426,15 @@ export function App() {
         dispatchFocusNodeIds([result.nodeIds[0]]);
       }
       const message = result.errors.length > 0
-        ? `å›¾ç‰‡å¯¼å…¥å®Œæˆ ${result.imported} å¼ ï¼Œå¤±è´¥ ${result.errors.length} å¼ `
-        : `å›¾ç‰‡å¯¼å…¥å®Œæˆ ${result.imported} å¼ `;
+        ? `图片导入完成 ${result.imported} 张，失败 ${result.errors.length} 张`
+        : `图片导入完成 ${result.imported} 张`;
       setStatus(message);
       if (result.errors.length > 0) {
-        alert(`${message}ï¼š\n\n${result.errors.join('\n\n')}`);
+        alert(`${message}：\n\n${result.errors.join('\n\n')}`);
       }
     } catch (error) {
-      setStatus('å›¾ç‰‡æŠ“å–å¤±è´¥');
-      alert(`å›¾ç‰‡æŠ“å–å¤±è´¥ï¼?{String(error)}`);
+      setStatus('图片抓取失败');
+      alert(`图片抓取失败：${String(error)}`);
     }
   };
 
@@ -2745,6 +2798,8 @@ export function App() {
         />
         {settings.showInspectorPanel && <InspectorPanel />}
       </main>
+
+      {settings.showStatusbar && <div className="statusbar" role="status" aria-live="polite">{status}</div>}
 
       {saveNotice && <div className="project-save-notice" role="status" aria-live="polite">{saveNotice}</div>}
 
@@ -3241,7 +3296,22 @@ export function App() {
                 />
                 保存工程时内嵌图片、模型、视频和文档本体
               </label>
-              <p className="muted">当前为无缓存模式：导入素材时直接把资源本体写进工程数据，不再复制到 AppData 或自定义缓存目录。保存后单个 .refmind3d 文件即可发给别人。关闭内嵌资源只适合临时轻量测试。</p>
+              <p className="muted">保存后单个 .refmind3d 文件即可发给别人。</p>
+              <div className="settings-section-title cache-section-title">
+                <strong>资源缓存目录</strong>
+              </div>
+              <p className="muted">图片预览、缩略图和已保存工程的资源会缓存在本地磁盘，加快画布移动和加载速度。</p>
+              <div className="cache-dir-row">
+                <input
+                  className="cache-dir-input"
+                  value={cacheDir}
+                  placeholder="正在读取缓存目录…"
+                  readOnly
+                  spellCheck={false}
+                />
+                <button onClick={chooseCustomCacheDir} disabled={cacheBusy}>选择目录</button>
+                <button onClick={chooseDefaultCacheDir} disabled={cacheBusy || !defaultCacheDir}>恢复默认</button>
+              </div>
             </section>
             <section className="ai-settings-section">
               {!API_ONLY_EDITION && <section className="ai-local-model-manager">
@@ -3414,6 +3484,25 @@ export function App() {
               <p className="muted">键盘格式示例：Ctrl+N、Ctrl+Shift+Z、Alt+T。鼠标格式示例：Alt+RightMouse、Alt+LeftMouse。</p>
             </section>
             <p className="muted">文本逻辑：Ctrl+N 会在鼠标所在画布位置创建文本；单击选择/拖动，双击编辑。Delete 删除选中节点。</p>
+          </section>
+        </div>
+      )}
+      {cacheSettingsOpen && (
+        <div className="settings-backdrop">
+          <section className="settings-dialog cache-first-run-dialog" onMouseDown={(event) => event.stopPropagation()}>
+            <header>
+              <strong>推荐设置缓存目录</strong>
+            </header>
+            <p>RefMind3D 现在会把图片预览、缩略图和工程资源缓存到本地磁盘，避免画布图片较多时移动和加载卡顿。</p>
+            <p className="muted">
+              建议把缓存目录放在容量充足的本地磁盘（如 D 盘或 NVMe 固态盘）。
+              当前默认位置：<span className="path-text">{defaultCacheDir || '正在读取…'}</span>
+            </p>
+            <div className="cache-dialog-actions">
+              <button onClick={chooseDefaultCacheDir} disabled={cacheBusy || !defaultCacheDir}>使用默认位置</button>
+              <button onClick={chooseCustomCacheDir} disabled={cacheBusy}>选择自定义位置</button>
+            </div>
+            <p className="muted">以后可在「设置 → 存储方式」中随时修改。</p>
           </section>
         </div>
       )}

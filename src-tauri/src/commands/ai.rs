@@ -20,6 +20,16 @@ const OLLAMA_BUNDLED_BASE: &str = "http://127.0.0.1:11435";
 const OLLAMA_BUNDLED_HOST: &str = "127.0.0.1:11435";
 const COMFYUI_DEFAULT_BASE: &str = "http://127.0.0.1:8188";
 
+/// Build an HTTP client with an explicit timeout. Every AI request previously
+/// used `reqwest::Client::new()` with no timeout, so a hung endpoint could
+/// block the UI forever (especially large Ollama model pulls).
+fn http_client(timeout: Duration) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|e| format!("HTTP client init failed: {e}"))
+}
+
 #[tauri::command]
 pub async fn ai_chat(
     api_url: String,
@@ -53,7 +63,7 @@ pub async fn ai_chat(
         system_prompt.trim()
     };
 
-    let client = reqwest::Client::new();
+    let client = http_client(Duration::from_secs(300))?;
 
     if is_ollama_url(&api_url) {
         ensure_ollama_running(&client, &api_url).await?;
@@ -172,7 +182,7 @@ pub async fn ai_generate_image(
         return Err("Ollama vision models can analyze images, but they cannot generate images. Choose Local Image Runtime, OpenAI Images, or Doubao Images.".to_string());
     }
 
-    let client = reqwest::Client::new();
+    let client = http_client(Duration::from_secs(600))?;
     match provider.as_str() {
         "doubao-images" => {
             generate_with_doubao_images(
@@ -205,7 +215,7 @@ pub async fn ai_generate_image(
 
 #[tauri::command]
 pub async fn ai_list_ollama_models(api_url: String) -> Result<Vec<String>, String> {
-    let client = reqwest::Client::new();
+    let client = http_client(Duration::from_secs(30))?;
     ensure_ollama_running(&client, &api_url).await?;
     fetch_ollama_model_names(&client, &api_url)
         .await
@@ -217,7 +227,7 @@ pub async fn ai_pull_ollama_model(api_url: String, model: String) -> Result<Stri
     if model.trim().is_empty() {
         return Err("Model name is empty.".to_string());
     }
-    let client = reqwest::Client::new();
+    let client = http_client(Duration::from_secs(3600))?;
     ensure_ollama_running(&client, &api_url).await?;
     let base = normalize_ollama_base(&api_url);
     let url = format!("{}/api/pull", base);
@@ -245,7 +255,7 @@ pub async fn ai_pull_ollama_model(api_url: String, model: String) -> Result<Stri
 
 #[tauri::command]
 pub async fn ai_local_runtime_status(api_url: String) -> Result<Value, String> {
-    let client = reqwest::Client::new();
+    let client = http_client(Duration::from_secs(30))?;
     let ollama_models = match ensure_ollama_running(&client, &api_url).await {
         Ok(()) => fetch_ollama_model_names(&client, &api_url)
             .await
@@ -437,7 +447,7 @@ async fn generate_with_local_comfyui(
     size: String,
     _quality: String,
 ) -> Result<String, String> {
-    let client = reqwest::Client::new();
+    let client = http_client(Duration::from_secs(600))?;
     ensure_comfyui_running(&client).await?;
 
     let key = local_image_model_key(model);

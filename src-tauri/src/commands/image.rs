@@ -43,6 +43,9 @@ const IMAGE_FORMATS: &[&str] = &[
 ];
 const PREVIEW_MAX_SIDE: u32 = 2400;
 const MAX_REMOTE_IMAGE_BYTES: u64 = 200 * 1024 * 1024;
+// Reject absurdly large decoded images (decompression-bomb guard). 180 MP is
+// roughly 720 MB of RGBA, far beyond any real reference board image.
+const MAX_DECODE_PIXELS: u64 = 180_000_000;
 
 #[tauri::command]
 pub async fn import_clipboard_image_data_url(
@@ -135,6 +138,7 @@ async fn import_remote_image_asset_async(
     }
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::limited(10))
+        .timeout(std::time::Duration::from_secs(120))
         .build()?;
     let mut errors = Vec::new();
     let mut candidates = candidates_from_url(&url);
@@ -524,8 +528,13 @@ fn decode_preview(path: &Path, ext: &str) -> anyhow::Result<DynamicImage> {
         let bytes = fs::read(path).with_context(|| "Read PSD/PSB file failed")?;
         return Ok(decode_psd_preview_or_placeholder(&bytes));
     }
+    if ext == "dds" {
+        let bytes = fs::read(path).with_context(|| "Read DDS file failed")?;
+        return Ok(decode_dds_preview_or_placeholder(&bytes));
+    }
     let img = image::open(path)
         .with_context(|| format!("Image decode failed for preview: {}", path.display()))?;
+    assert_reasonable_dimensions(&img)?;
     Ok(limit_preview_size(img))
 }
 
@@ -533,8 +542,25 @@ fn decode_image_bytes_preview(bytes: &[u8], ext: &str) -> anyhow::Result<Dynamic
     if ext == "psd" || ext == "psb" {
         return Ok(decode_psd_preview_or_placeholder(bytes));
     }
+    if ext == "dds" {
+        return Ok(decode_dds_preview_or_placeholder(bytes));
+    }
     let img = image::load_from_memory(bytes).map_err(|e| anyhow!("Image decode failed: {e}"))?;
+    assert_reasonable_dimensions(&img)?;
     Ok(limit_preview_size(img))
+}
+
+/// Reject images whose decoded pixel count exceeds the bomb guard.
+fn assert_reasonable_dimensions(img: &DynamicImage) -> anyhow::Result<()> {
+    let (w, h) = img.dimensions();
+    let pixels = w as u64 * h as u64;
+    if pixels > MAX_DECODE_PIXELS {
+        return Err(anyhow!(
+            "图片尺寸过大（{w}×{h}，约 {} 万像素），已拒绝解码以防内存耗尽",
+            pixels / 10_000
+        ));
+    }
+    Ok(())
 }
 
 fn decode_psd_preview_or_placeholder(bytes: &[u8]) -> DynamicImage {
@@ -546,8 +572,18 @@ fn decode_psd_preview_or_placeholder(bytes: &[u8]) -> DynamicImage {
     psd_placeholder(bytes)
 }
 
-fn psd_placeholder(bytes: &[u8]) -> DynamicImage {
-    let (source_width, source_height) = psd_header_dimensions(bytes).unwrap_or((640, 480));
+/// The `image` crate DDS decoder only supports DXT1/3/5 (BC1/2/3). DDS files
+/// with a DX10 header or BC4-BC7 blocks fail to decode, so fall back to a
+/// checkerboard placeholder (the original file is still preserved in the
+/// project) instead of failing the whole import.
+fn decode_dds_preview_or_placeholder(bytes: &[u8]) -> DynamicImage {
+    match image::load_from_memory(bytes) {
+        Ok(img) if assert_reasonable_dimensions(&img).is_ok() => limit_preview_size(img),
+        _ => dds_placeholder(bytes),
+    }
+}
+
+fn checkerboard_placeholder(source_width: u32, source_height: u32) -> DynamicImage {
     let max_side = 900f32;
     let side = source_width.max(source_height).max(1) as f32;
     let scale = (max_side / side).min(1.0);
@@ -562,6 +598,31 @@ fn psd_placeholder(bytes: &[u8]) -> DynamicImage {
         }
     }
     DynamicImage::ImageRgba8(image)
+}
+
+fn psd_placeholder(bytes: &[u8]) -> DynamicImage {
+    let (w, h) = psd_header_dimensions(bytes).unwrap_or((640, 480));
+    checkerboard_placeholder(w, h)
+}
+
+fn dds_placeholder(bytes: &[u8]) -> DynamicImage {
+    let (w, h) = dds_header_dimensions(bytes).unwrap_or((640, 480));
+    checkerboard_placeholder(w, h)
+}
+
+fn dds_header_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() < 20 || &bytes[0..4] != b"DDS " {
+        return None;
+    }
+    // DDS_HEADER layout after the 4-byte magic: dwSize(4) dwFlags(4)
+    // dwHeight(4) dwWidth(4).
+    let height = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
+    let width = u32::from_le_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+    if width == 0 || height == 0 {
+        None
+    } else {
+        Some((width, height))
+    }
 }
 
 fn psd_header_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
@@ -938,6 +999,7 @@ fn detect_image_extension(
             ImageFormat::Hdr => "hdr",
             ImageFormat::OpenExr => "exr",
             ImageFormat::Avif => "avif",
+            ImageFormat::Qoi => "qoi",
             _ => "png",
         }
         .to_string();

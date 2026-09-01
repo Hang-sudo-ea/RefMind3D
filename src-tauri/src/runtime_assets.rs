@@ -6,6 +6,8 @@ use std::sync::{Mutex, OnceLock};
 use tauri::http;
 use zip::ZipArchive;
 
+use crate::cache;
+
 #[derive(Clone)]
 pub enum ResourceBacking {
     Memory(Vec<u8>),
@@ -120,6 +122,17 @@ pub fn register_packed_resource(
     resource_url(&resource.asset_id, &resource.field)
 }
 
+/// Look up only the MIME type of a resource without cloning its bytes. Used by
+/// the protocol handler so a disk-cache hit can be served with the correct
+/// Content-Type without touching the backing store.
+pub fn resource_mime(asset_id: &str, field: &str) -> Option<String> {
+    resources()
+        .lock()
+        .unwrap()
+        .get(&key(asset_id, field))
+        .map(|resource| resource.mime.clone())
+}
+
 pub fn read_resource(asset_id: &str, field: &str) -> Result<(Vec<u8>, String, String), String> {
     let resource = resources()
         .lock()
@@ -156,11 +169,16 @@ pub fn read_resource_url(value: &str) -> Result<(Vec<u8>, String, String), Strin
     read_resource(&asset_id, &field)
 }
 
-fn response(status: u16, content_type: &str, body: Vec<u8>) -> http::Response<Vec<u8>> {
+fn response(
+    status: u16,
+    content_type: &str,
+    body: Vec<u8>,
+    cache_control: &str,
+) -> http::Response<Vec<u8>> {
     http::Response::builder()
         .status(status)
         .header("Access-Control-Allow-Origin", "*")
-        .header("Cache-Control", "no-store")
+        .header("Cache-Control", cache_control)
         .header("Content-Type", content_type)
         .body(body)
         .unwrap()
@@ -168,8 +186,39 @@ fn response(status: u16, content_type: &str, body: Vec<u8>) -> http::Response<Ve
 
 pub fn protocol_response(request: http::Request<Vec<u8>>) -> http::Response<Vec<u8>> {
     let uri = request.uri().to_string();
-    match read_resource_url(&uri) {
-        Ok((bytes, mime, _)) => response(200, &mime, bytes),
-        Err(message) => response(404, "text/plain; charset=utf-8", message.into_bytes()),
+    let (asset_id, field) = match parse_resource_url(&uri) {
+        Some(pair) => pair,
+        None => {
+            return response(
+                404,
+                "text/plain; charset=utf-8",
+                "Invalid RefMind3D resource URL".into(),
+                "no-store",
+            )
+        }
+    };
+
+    // Resource URLs are immutable (asset_id is a stable UUID), so serve them
+    // with a long-lived cache header. The WebView HTTP cache then avoids
+    // re-fetching/re-decoding images when viewport culling remounts nodes.
+    let mime = resource_mime(&asset_id, &field)
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let cache_control = "max-age=31536000, immutable";
+
+    if let Some(bytes) = cache::read_cache(&asset_id, &field) {
+        return response(200, &mime, bytes, cache_control);
+    }
+
+    match read_resource(&asset_id, &field) {
+        Ok((bytes, _mime, _name)) => {
+            // Cache writes are best-effort: a read-only cache directory must
+            // not break rendering, it only means the resource is served from
+            // the backing store again on the next request.
+            if let Err(error) = cache::write_cache(&asset_id, &field, &bytes) {
+                eprintln!("RefMind3D cache write failed for {asset_id}::{field}: {error}");
+            }
+            response(200, &mime, bytes, cache_control)
+        }
+        Err(message) => response(404, "text/plain; charset=utf-8", message.into_bytes(), "no-store"),
     }
 }
