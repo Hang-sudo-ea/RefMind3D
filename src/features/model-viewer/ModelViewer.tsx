@@ -239,13 +239,24 @@ export function ModelViewer({ modelPath, modelFormat, compact = false }: ModelVi
       object.traverse((child) => {
         const mesh = child as THREE.Mesh;
         if (!mesh.isMesh) return;
+        let replacement: THREE.Material | null = null;
         if (mode === 'wireframe') {
-          mesh.material = new THREE.MeshBasicMaterial({ color: 0xd9dee8, wireframe: true });
+          replacement = new THREE.MeshBasicMaterial({ color: 0xd9dee8, wireframe: true });
         } else if (mode === 'gray') {
-          mesh.material = new THREE.MeshStandardMaterial({ color: 0x7a7d82, roughness: 0.95, metalness: 0.0 });
+          replacement = new THREE.MeshStandardMaterial({ color: 0x7a7d82, roughness: 0.95, metalness: 0.0 });
         } else if (mode === 'white') {
-          mesh.material = new THREE.MeshStandardMaterial({ color: 0xf2f2f2, roughness: 0.95, metalness: 0.0 });
+          replacement = new THREE.MeshStandardMaterial({ color: 0xf2f2f2, roughness: 0.95, metalness: 0.0 });
         }
+        if (!replacement) return;
+        // Dispose the outgoing material so switching display modes does not
+        // leak the original model's geometry textures / GPU resources.
+        const outgoing = mesh.material;
+        if (Array.isArray(outgoing)) {
+          outgoing.forEach((material) => disposeMaterial(material));
+        } else if (outgoing) {
+          disposeMaterial(outgoing);
+        }
+        mesh.material = replacement;
       });
     };
 

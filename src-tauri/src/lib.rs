@@ -1,3 +1,4 @@
+mod cache;
 mod commands;
 mod runtime_assets;
 
@@ -38,7 +39,9 @@ pub fn run() {
             commands::project::save_data_url_to_path,
             commands::project::copy_file_to_path,
             commands::project::export_files_to_folder,
-            commands::window::set_window_opacity
+            commands::window::set_window_opacity,
+            cache::get_cache_settings,
+            cache::set_cache_dir
         ])
         .run(tauri::generate_context!())
         .expect("error while running RefMind3D");
